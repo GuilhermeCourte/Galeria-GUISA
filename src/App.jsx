@@ -683,7 +683,11 @@ function App() {
         onClick={handleClick} 
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
-        onTouchMove={handleTouchMove}
+        onContextMenu={(e) => {
+          if (!isSelectionMode) { // Only prevent default if not in selection mode
+            e.preventDefault();
+          }
+        }}
         title={item.name} 
         style={{ cursor: isViewingTrash ? 'default' : 'pointer' }}
       >
@@ -700,7 +704,7 @@ function App() {
             </span>
           ) : (
             (!imgError && item.thumbnailLink) ?
-              <img src={item.thumbnailLink} alt={item.name} onError={() => setImgError(true)} /> :
+              <img src={item.thumbnailLink} alt={item.name} onError={() => setImgError(true)} onContextMenu={(e) => e.preventDefault()} /> :
               <span className="file-icon">
                 <svg width="50" height="50" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
               </span>
@@ -789,7 +793,7 @@ function App() {
   if (isLoadingRoot) return <div className="container" style={{ display: 'flex', justifyContent: 'center', marginTop: '100px' }}><div className="spinner"></div></div>;
 
   return (
-    <div className="container" onClick={() => { setActiveMenuId(null); setIsHeaderMenuOpen(false); }}>
+    <div className="container" onClick={() => { setActiveMenuId(null); setIsHeaderMenuOpen(false); }} onContextMenu={(e) => e.preventDefault()}>
 
       <div className="fixed-header-group">
         <div className="top-bar">
@@ -1216,7 +1220,7 @@ function App() {
       {previewItem && (
         <div className="modal-overlay" onClick={() => setPreviewItem(null)}>
           <div className="image-modal-content" onClick={(e) => e.stopPropagation()}>
-            <img className="lightbox-img" src={previewItem.thumbnailLink?.replace(/=s\d+/g, '=s1024')} alt={previewItem.name} onError={(e) => { e.target.onerror = null; e.target.src = previewItem.thumbnailLink; }} />
+            <img className="lightbox-img" src={previewItem.thumbnailLink?.replace(/=s\d+/g, '=s1024')} alt={previewItem.name} onError={(e) => { e.target.onerror = null; e.target.src = previewItem.thumbnailLink; }} onContextMenu={(e) => e.preventDefault()} />
 
             {/* --- BOTÕES NO RODAPÉ DO PREVIEW --- */}
             <div className="lightbox-footer" style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
