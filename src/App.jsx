@@ -55,6 +55,10 @@ function App() {
   const [filesToUpload, setFilesToUpload] = useState([]);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef(null);
+  
+  // --- Estados de Seleção Múltipla ---
+  const [selectedItems, setSelectedItems] = useState(new Set());
+  const isSelectionMode = selectedItems.size > 0;
 
   // Toast & Confirm
   const [toast, setToast] = useState({ show: false, message: '', type: 'info' });
@@ -225,6 +229,7 @@ function App() {
     setIsViewingTrash(false);
     setCurrentPage(0);
     setPageTokens([null]);
+    setSelectedItems(new Set());
   };
 
   const enterTrashView = () => {
@@ -477,6 +482,40 @@ function App() {
     }
   };
 
+  // --- Funções de Seleção Múltipla ---
+  const toggleSelection = (itemId) => {
+    const newSet = new Set(selectedItems);
+    if (newSet.has(itemId)) {
+      newSet.delete(itemId);
+    } else {
+      newSet.add(itemId);
+    }
+    setSelectedItems(newSet);
+  };
+
+  const clearSelection = () => {
+    setSelectedItems(new Set());
+  };
+
+  const downloadSelectedItems = async () => {
+    const itemsToDownload = viewItems.filter(item => selectedItems.has(item.id) && item.mimeType !== 'application/vnd.google-apps.folder');
+    
+    if (itemsToDownload.length === 0) {
+        showToast("Nenhum arquivo para baixar.", "info");
+        return;
+    }
+
+    showToast(`Baixando ${itemsToDownload.length} arquivos...`, "info");
+    
+    // Baixar sequencialmente para não travar o navegador
+    for (const item of itemsToDownload) {
+        await downloadFile(item);
+        // Pequeno delay para evitar bloqueio de popup se possível, mas browsers modernos podem bloquear múltiplos downloads
+        await new Promise(r => setTimeout(r, 500));
+    }
+    clearSelection();
+  };
+
   const restoreItem = (itemId, itemName) => {
     openConfirm(
       "Restaurar",
@@ -539,10 +578,10 @@ function App() {
   const handleFolderClick = (folderId, folderName) => {
     setViewHistory(prev => [...prev, { id: currentFolderView, name: currentFolderName }]);
     setCurrentFolderView(folderId);
-    setCurrentFolderName(folderName);
     setSearchQuery('');
     setCurrentPage(0);
     setPageTokens([null]);
+    setSelectedItems(new Set());
   };
 
   const handleBack = () => {
@@ -566,6 +605,7 @@ function App() {
     setCurrentFolderName(previousState.name);
     setCurrentPage(0);
     setPageTokens([null]);
+    setSelectedItems(new Set());
   };
 
   useEffect(() => {
@@ -596,10 +636,40 @@ function App() {
     const isFolder = item.mimeType === 'application/vnd.google-apps.folder';
     const isMenuOpen = activeMenuId === item.id;
     const [imgError, setImgError] = useState(false);
+    const isSelected = selectedItems.has(item.id);
+    const longPressTimer = useRef(null);
 
     const folderStyle = { color: item.folderColorRgb || '#448AFF' };
 
+    const handleTouchStart = () => {
+        longPressTimer.current = setTimeout(() => {
+            toggleSelection(item.id);
+            // Vibrar se suportado
+            if (navigator.vibrate) navigator.vibrate(50);
+        }, 600); // 600ms para considerar long press
+    };
+
+    const handleTouchEnd = () => {
+        if (longPressTimer.current) {
+            clearTimeout(longPressTimer.current);
+            longPressTimer.current = null;
+        }
+    };
+
+    const handleTouchMove = () => {
+        // Se mover o dedo, cancela o long press
+        if (longPressTimer.current) {
+            clearTimeout(longPressTimer.current);
+            longPressTimer.current = null;
+        }
+    };
+
     const handleClick = () => {
+      if (isSelectionMode) {
+         toggleSelection(item.id);
+         return;
+      }
+
       if (isMenuOpen) { setActiveMenuId(null); return; }
       if (isViewingTrash) return;
 
@@ -608,7 +678,20 @@ function App() {
     };
 
     return (
-      <div className="card" onClick={handleClick} title={item.name} style={{ cursor: isViewingTrash ? 'default' : 'pointer' }}>
+      <div 
+        className={`card ${isSelected ? 'selected' : ''}`} 
+        onClick={handleClick} 
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
+        onTouchMove={handleTouchMove}
+        title={item.name} 
+        style={{ cursor: isViewingTrash ? 'default' : 'pointer' }}
+      >
+        {isSelectionMode && (
+          <div className="selection-checkbox" onClick={(e) => { e.stopPropagation(); toggleSelection(item.id); }}>
+            {isSelected && <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>}
+          </div>
+        )}
 
         <div className="card-content">
           {isFolder ? (
@@ -626,9 +709,11 @@ function App() {
 
         <div className="card-footer">
           <span className="card-name">{item.name}</span>
-          <button className={`more-btn ${isMenuOpen ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); setActiveMenuId(isMenuOpen ? null : item.id); }}>
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="2" /><circle cx="19" cy="12" r="2" /><circle cx="5" cy="12" r="2" /></svg>
-          </button>
+          {!isSelectionMode && (
+            <button className={`more-btn ${isMenuOpen ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); setActiveMenuId(isMenuOpen ? null : item.id); }}>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="2" /><circle cx="19" cy="12" r="2" /><circle cx="5" cy="12" r="2" /></svg>
+            </button>
+          )}
 
           {isMenuOpen && (
             <div className="dropdown-menu" onClick={(e) => e.stopPropagation()}>
@@ -648,6 +733,16 @@ function App() {
                 </>
               ) : (
                 <>
+                  <button className="dropdown-item" onClick={() => { toggleSelection(item.id); setActiveMenuId(null); }}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><polyline points="9 11 12 14 22 4"></polyline></svg>
+                    Selecionar
+                  </button>
+                  {!isFolder && (
+                    <button className="dropdown-item" onClick={() => downloadFile(item)}>
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                      Baixar
+                    </button>
+                  )}
                   <button className="dropdown-item" onClick={() => openMoveModal(item)}>
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 9l7 7 7-7"/></svg>
                     Mover
@@ -735,14 +830,23 @@ function App() {
           <h2>
             <span style={{ opacity: 0.5 }}></span>
             <span>
-              {searchQuery
-                ? `Resultados`
-                : (isViewingTrash ? 'Lixeira' : currentFolderName)}
+              {isSelectionMode 
+                ? `${selectedItems.size} selecionado(s)` 
+                : (searchQuery ? `Resultados` : (isViewingTrash ? 'Lixeira' : currentFolderName))}
             </span>
           </h2>
           <div className="actions-header">
 
-                        {!isViewingTrash && (
+                        {isSelectionMode ? (
+                           <div style={{ display: 'flex', gap: '10px', width: '100%', justifyContent: 'flex-end' }}>
+                              <button onClick={clearSelection} style={{background: 'transparent', border: '1px solid var(--text-secondary)'}}>Cancelar</button>
+                              <button className="primary-btn" onClick={downloadSelectedItems}>
+                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                                 Baixar ({selectedItems.size})
+                              </button>
+                           </div>
+                        ) : (
+                        !isViewingTrash && (
 
                           <div className="desktop-actions-group">
 
@@ -878,7 +982,7 @@ function App() {
 
                           </div>
 
-                        )}
+                        ))}
           </div>
         </header>
 
