@@ -17,4 +17,4 @@ jobs:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_GALERIA_GUISA }}
           channelId: live
-          projectId: galeria-guisa
+          projectId: 254492045728
