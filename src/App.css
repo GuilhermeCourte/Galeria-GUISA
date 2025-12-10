@@ -444,6 +444,85 @@ body.light-mode .header-dropdown {
 .login-footer { margin-top: 24px; font-size: 0.75rem; color: var(--text-secondary); opacity: 0.7; }
 
 /* -------------------------------------- */
+/* --- CUSTOM UPLOAD DROPZONE --- */
+/* -------------------------------------- */
+.upload-dropzone {
+  border: 2px dashed var(--glass-border);
+  border-radius: 20px;
+  padding: 40px 20px;
+  text-align: center;
+  transition: all 0.3s;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.02);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.upload-dropzone:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--text-secondary);
+}
+.upload-dropzone.dragging {
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.1);
+}
+.upload-icon {
+  font-size: 3rem;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+.upload-text {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.upload-subtext {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.upload-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 20px;
+  max-height: 200px;
+  overflow-y: auto;
+  padding-right: 5px;
+}
+.upload-file-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--input-bg);
+  padding: 10px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--glass-border);
+}
+.upload-file-name {
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 250px;
+}
+.remove-file-btn {
+  background: transparent;
+  border: none;
+  color: var(--danger);
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+}
+.remove-file-btn:hover {
+  background: rgba(255, 77, 77, 0.1);
+}
+
+/* -------------------------------------- */
 /* --- MOBILE RESPONSIVE (Telas < 768px) --- */
 /* -------------------------------------- */
 @media (max-width: 768px) {

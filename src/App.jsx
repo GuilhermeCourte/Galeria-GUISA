@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { GoogleOAuthProvider, useGoogleLogin } from '@react-oauth/google';
 import './App.css';
 
@@ -40,6 +40,21 @@ function App() {
   const [previewItem, setPreviewItem] = useState(null);
   const [activeMenuId, setActiveMenuId] = useState(null);
   const [isHeaderMenuOpen, setIsHeaderMenuOpen] = useState(false);
+  
+  // --- Estados de Mover ---
+  const [isMoveModalOpen, setIsMoveModalOpen] = useState(false);
+  const [itemToMove, setItemToMove] = useState(null);
+  const [moveTargetId, setMoveTargetId] = useState(null);
+  const [moveTargetName, setMoveTargetName] = useState('');
+  const [moveFolderList, setMoveFolderList] = useState([]);
+  const [moveHistory, setMoveHistory] = useState([]);
+  const [isLoadingMove, setIsLoadingMove] = useState(false);
+
+  // --- Estados de Upload Customizado ---
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [filesToUpload, setFilesToUpload] = useState([]);
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef(null);
 
   // Toast & Confirm
   const [toast, setToast] = useState({ show: false, message: '', type: 'info' });
@@ -57,6 +72,10 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoginLoading, setIsLoginLoading] = useState(false);
   const [currentSort, setCurrentSort] = useState('date_desc'); // name, date_desc, date_asc
+
+  // --- Estados de Paginação ---
+  const [pageTokens, setPageTokens] = useState([null]);
+  const [currentPage, setCurrentPage] = useState(0);
 
   // --- Helpers ---
   const formatBytes = (bytes) => {
@@ -194,6 +213,8 @@ function App() {
     setIsViewingTrash(false);
     setActiveMenuId(null);
     setSearchQuery('');
+    setCurrentPage(0);
+    setPageTokens([null]);
   };
 
   const handleLogoClick = () => {
@@ -202,12 +223,16 @@ function App() {
     setCurrentFolderName(APP_ROOT_NAME);
     setViewHistory([]);
     setIsViewingTrash(false);
+    setCurrentPage(0);
+    setPageTokens([null]);
   };
 
   const enterTrashView = () => {
     setIsViewingTrash(true);
     setViewHistory([]);
     setSearchQuery('');
+    setCurrentPage(0);
+    setPageTokens([null]);
   };
 
   const fetchStorageQuota = async (token) => {
@@ -225,7 +250,7 @@ function App() {
     } catch (error) { console.error("Quota error", error); }
   };
 
-  const loadView = async (token, parentId, queryOverride = null) => {
+  const loadView = async (token, parentId, queryOverride = null, pageIdx = 0) => {
     if (!token || (!parentId && !queryOverride && !isViewingTrash)) return;
 
     let query = '';
@@ -246,7 +271,8 @@ function App() {
     }
 
     const encodedQuery = encodeURIComponent(query);
-    const driveApiUrl = `https://www.googleapis.com/drive/v3/files?pageSize=100&fields=files(id, name, thumbnailLink, mimeType, folderColorRgb, size, createdTime)&q=${encodedQuery}&orderBy=${orderBy}`;
+    const pageToken = pageTokens[pageIdx] || '';
+    const driveApiUrl = `https://www.googleapis.com/drive/v3/files?pageSize=18&fields=nextPageToken,files(id, name, thumbnailLink, mimeType, folderColorRgb, size, createdTime)&q=${encodedQuery}&orderBy=${orderBy}${pageToken ? `&pageToken=${pageToken}` : ''}`;
 
     try {
       const response = await fetch(driveApiUrl, { headers: { 'Authorization': `Bearer ${token}` } });
@@ -257,6 +283,22 @@ function App() {
       }
       const data = await response.json();
       setViewItems(data.files || []);
+      
+      if (data.nextPageToken) {
+        setPageTokens(prev => {
+          const newTokens = [...prev];
+          newTokens[pageIdx + 1] = data.nextPageToken;
+          return newTokens;
+        });
+      } else {
+         // Clear subsequent tokens if no next page (e.g. end of list)
+         setPageTokens(prev => {
+             const newTokens = [...prev];
+             // If we are at pageIdx, keep up to pageIdx + 1 (which is undefined/null now)
+             return newTokens.slice(0, pageIdx + 1);
+         });
+      }
+
       fetchStorageQuota(token);
     } catch (error) { console.error(error); }
   };
@@ -278,19 +320,137 @@ function App() {
       setNewFolderName('');
       setIsModalOpen(false);
       showToast("Pasta criada!", "success");
-      loadView(accessToken, currentFolderView);
+      loadView(accessToken, currentFolderView, null, currentPage);
     } catch (error) { showToast("Erro ao criar pasta.", "error"); }
   };
 
-  const handleUpload = async (e) => {
-    const files = Array.from(e.target.files);
-    if (files.length === 0 || !accessToken) return;
+  // --- Funções de Mover ---
+  const loadMoveFolders = async (parentId) => {
+    setIsLoadingMove(true);
+    try {
+      const query = `'${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+      const response = await fetch(`https://www.googleapis.com/drive/v3/files?pageSize=100&fields=files(id, name)&q=${encodeURIComponent(query)}&orderBy=name`, {
+        headers: { 'Authorization': `Bearer ${accessToken}` }
+      });
+      const data = await response.json();
+      // Filtrar a própria pasta se estiver movendo uma pasta (não pode mover para dentro de si mesma)
+      const filtered = (data.files || []).filter(f => f.id !== itemToMove?.id);
+      setMoveFolderList(filtered);
+    } catch (error) { console.error(error); } finally { setIsLoadingMove(false); }
+  };
+
+  const openMoveModal = (item) => {
+    setItemToMove(item);
+    setMoveTargetId(rootId);
+    setMoveTargetName(APP_ROOT_NAME);
+    setMoveHistory([]);
+    setIsMoveModalOpen(true);
+    setActiveMenuId(null);
+    // Use timeout to ensure state update before fetch (though usually fine in React batching, clearer dependency)
+    // Actually, passing rootId directly is safer.
+    // We need to fetch folders for the root immediately.
+    // However, since we just set state, we can't use moveTargetId immediately.
+    // We will call a separate helper or use useEffect? 
+    // Better: call loadMoveFolders with rootId directly.
+    
+    // Pequeno hack: como setMoveTargetId é async, passamos o ID direto
+    // Mas precisamos esperar o itemToMove estar setado para o filtro funcionar?
+    // O filtro usa itemToMove?.id. Se for batch update, pode ser undefined na 1a render.
+    // Vamos setar e chamar.
+    
+    // Melhor abordagem: useEffect monitorando moveTargetId quando modal aberta.
+  };
+
+  useEffect(() => {
+    if (isMoveModalOpen && moveTargetId && accessToken) {
+      loadMoveFolders(moveTargetId);
+    }
+  }, [moveTargetId, isMoveModalOpen]); 
+  // Nota: itemToMove não está na dep, então se mudar, não recarrega. 
+  // Mas openMoveModal seta tudo junto.
+
+  const handleMoveNavigate = (folderId, folderName) => {
+    setMoveHistory(prev => [...prev, { id: moveTargetId, name: moveTargetName }]);
+    setMoveTargetId(folderId);
+    setMoveTargetName(folderName);
+  };
+
+  const handleMoveBack = () => {
+    if (moveHistory.length === 0) return;
+    const prev = moveHistory[moveHistory.length - 1];
+    setMoveHistory(h => h.slice(0, -1));
+    setMoveTargetId(prev.id);
+    setMoveTargetName(prev.name);
+  };
+
+  const confirmMove = async () => {
+    if (!itemToMove || !moveTargetId) return;
+    showToast(`Movendo para ${moveTargetName}...`, 'info');
+    
+    try {
+      // 1. Obter parents atuais
+      const getRes = await fetch(`https://www.googleapis.com/drive/v3/files/${itemToMove.id}?fields=parents`, {
+        headers: { 'Authorization': `Bearer ${accessToken}` }
+      });
+      const getData = await getRes.json();
+      const currentParents = getData.parents ? getData.parents.join(',') : '';
+
+      // 2. Mover
+      const res = await fetch(`https://www.googleapis.com/drive/v3/files/${itemToMove.id}?addParents=${moveTargetId}&removeParents=${currentParents}`, {
+        method: 'PATCH',
+        headers: { 'Authorization': `Bearer ${accessToken}` }
+      });
+
+      if (!res.ok) throw new Error('Falha ao mover');
+
+      showToast("Movido com sucesso!", "success");
+      setIsMoveModalOpen(false);
+      loadView(accessToken, currentFolderView, null, currentPage);
+    } catch (error) {
+      console.error(error);
+      showToast("Erro ao mover item.", "error");
+    }
+  };
+
+  // --- Funções de Upload Customizado ---
+  const handleFileSelect = (e) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const newFiles = Array.from(e.target.files);
+      setFilesToUpload(prev => [...prev, ...newFiles]);
+    }
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const newFiles = Array.from(e.dataTransfer.files);
+      setFilesToUpload(prev => [...prev, ...newFiles]);
+    }
+  };
+
+  const removeFileFromUpload = (index) => {
+    setFilesToUpload(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const confirmUpload = async () => {
+    if (filesToUpload.length === 0 || !accessToken) return;
 
     setUploading(true);
-    showToast(`Enviando ${files.length} arquivo(s)...`, 'info');
+    showToast(`Enviando ${filesToUpload.length} arquivo(s)...`, 'info');
 
     try {
-      const uploadPromises = files.map(file => {
+      const uploadPromises = filesToUpload.map(file => {
         const form = new FormData();
         const metadata = {
           'name': file.name,
@@ -309,10 +469,11 @@ function App() {
 
       await Promise.all(uploadPromises);
       showToast("Concluído!", "success");
-      loadView(accessToken, currentFolderView);
+      setFilesToUpload([]);
+      setIsUploadModalOpen(false);
+      loadView(accessToken, currentFolderView, null, currentPage);
     } catch (error) { showToast("Falha no upload.", "error"); } finally {
       setUploading(false);
-      e.target.value = '';
     }
   };
 
@@ -330,7 +491,7 @@ function App() {
           });
           setActiveMenuId(null);
           showToast("Restaurado!", "success");
-          loadView(accessToken, currentFolderView);
+          loadView(accessToken, currentFolderView, null, currentPage);
         } catch (error) { showToast("Erro.", "error"); }
       }
     );
@@ -350,7 +511,7 @@ function App() {
           });
           setActiveMenuId(null);
           showToast("Movido para a lixeira.", "success");
-          loadView(accessToken, currentFolderView);
+          loadView(accessToken, currentFolderView, null, currentPage);
         } catch (error) { showToast("Erro.", "error"); }
       }
     );
@@ -369,7 +530,7 @@ function App() {
           });
           setActiveMenuId(null);
           showToast("Excluído.", "success");
-          loadView(accessToken, currentFolderView);
+          loadView(accessToken, currentFolderView, null, currentPage);
         } catch (error) { showToast("Erro.", "error"); }
       }
     );
@@ -380,16 +541,20 @@ function App() {
     setCurrentFolderView(folderId);
     setCurrentFolderName(folderName);
     setSearchQuery('');
+    setCurrentPage(0);
+    setPageTokens([null]);
   };
 
   const handleBack = () => {
-    if (searchQuery) { setSearchQuery(''); return; }
+    if (searchQuery) { setSearchQuery(''); setCurrentPage(0); setPageTokens([null]); return; }
 
     if (isViewingTrash) {
       setIsViewingTrash(false);
       setCurrentFolderView(rootId);
       setCurrentFolderName(APP_ROOT_NAME);
       setViewHistory([]);
+      setCurrentPage(0);
+      setPageTokens([null]);
       return;
     }
 
@@ -399,6 +564,8 @@ function App() {
     setViewHistory(prev => prev.slice(0, -1));
     setCurrentFolderView(previousState.id);
     setCurrentFolderName(previousState.name);
+    setCurrentPage(0);
+    setPageTokens([null]);
   };
 
   useEffect(() => {
@@ -416,13 +583,13 @@ function App() {
     const delaySearch = setTimeout(() => {
       if (searchQuery.trim() !== '') {
         const searchQ = `name contains '${searchQuery}' and trashed = false`;
-        loadView(accessToken, null, searchQ);
+        loadView(accessToken, null, searchQ, currentPage);
       } else {
-        loadView(accessToken, currentFolderView || rootId);
+        loadView(accessToken, currentFolderView || rootId, null, currentPage);
       }
     }, 500);
     return () => clearTimeout(delaySearch);
-  }, [searchQuery, currentFolderView, isViewingTrash, isLoggedIn, accessToken, rootId, currentSort]);
+  }, [searchQuery, currentFolderView, isViewingTrash, isLoggedIn, accessToken, rootId, currentSort, currentPage]);
 
   // --- ITEM CARD ---
   const ItemCard = ({ item }) => {
@@ -480,10 +647,16 @@ function App() {
                   </button>
                 </>
               ) : (
-                <button className="dropdown-item danger" onClick={() => moveToTrash(item.id, item.name)}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-                  Excluir
-                </button>
+                <>
+                  <button className="dropdown-item" onClick={() => openMoveModal(item)}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 9l7 7 7-7"/></svg>
+                    Mover
+                  </button>
+                  <button className="dropdown-item danger" onClick={() => moveToTrash(item.id, item.name)}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                    Excluir
+                  </button>
+                </>
               )}
             </div>
           )}
@@ -535,7 +708,7 @@ function App() {
             type="text"
             placeholder="Pesquisar..."
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => { setSearchQuery(e.target.value); setCurrentPage(0); setPageTokens([null]); }}
           />
 
           <div className="top-bar-right" style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
@@ -584,19 +757,9 @@ function App() {
                               <button onClick={() => setIsModalOpen(true)}>+ Nova Pasta</button>
 
                               <div>
-
-                                <input type="file" multiple id="file-upload" onChange={handleUpload} disabled={uploading} style={{ display: 'none' }} />
-
-                                <label htmlFor="file-upload">
-
-                                  <button as="span" className="primary-btn" onClick={() => document.getElementById('file-upload').click()}>
-
+                                <button className="primary-btn" onClick={() => setIsUploadModalOpen(true)}>
                                     {uploading ? 'Enviando...' : '↑ Upload'}
-
-                                  </button>
-
-                                </label>
-
+                                </button>
                               </div>
 
                             </div>
@@ -639,7 +802,7 @@ function App() {
 
                                 
 
-                                                                                                   <button className={`dropdown-item ${currentSort.startsWith('date') ? 'active-sort' : ''}`} onClick={() => { setCurrentSort(currentSort === 'date_desc' ? 'date_asc' : 'date_desc'); }}>
+                                                                                                   <button className={`dropdown-item ${currentSort.startsWith('date') ? 'active-sort' : ''}`} onClick={() => { setCurrentSort(currentSort === 'date_desc' ? 'date_asc' : 'date_desc'); setCurrentPage(0); setPageTokens([null]); }}>
 
                                 
 
@@ -675,7 +838,7 @@ function App() {
 
             
 
-                                 <button className={`dropdown-item ${currentSort.startsWith('name') ? 'active-sort' : ''}`} onClick={() => { setCurrentSort(currentSort === 'name_asc' ? 'name_desc' : 'name_asc'); }}>
+                                 <button className={`dropdown-item ${currentSort.startsWith('name') ? 'active-sort' : ''}`} onClick={() => { setCurrentSort(currentSort === 'name_asc' ? 'name_desc' : 'name_asc'); setCurrentPage(0); setPageTokens([null]); }}>
 
                                     Nome
 
@@ -738,6 +901,40 @@ function App() {
         )}
       </div>
 
+      <div className="pagination-controls" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '20px', margin: '30px 0', paddingBottom: '20px' }}>
+        <button 
+          onClick={() => setCurrentPage(p => Math.max(0, p - 1))} 
+          disabled={currentPage === 0}
+          className="primary-btn"
+          style={{ 
+             opacity: currentPage === 0 ? 0.5 : 1, 
+             cursor: currentPage === 0 ? 'not-allowed' : 'pointer',
+             background: 'var(--bg-card)',
+             color: 'var(--text-primary)'
+          }}
+        >
+          ← Anterior
+        </button>
+        
+        <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>
+           Página {currentPage + 1}
+        </span>
+        
+        <button 
+          onClick={() => setCurrentPage(p => p + 1)} 
+          disabled={!pageTokens[currentPage + 1]} 
+          className="primary-btn"
+          style={{ 
+             opacity: !pageTokens[currentPage + 1] ? 0.5 : 1, 
+             cursor: !pageTokens[currentPage + 1] ? 'not-allowed' : 'pointer',
+             background: 'var(--bg-card)',
+             color: 'var(--text-primary)'
+          }}
+        >
+          Próxima →
+        </button>
+      </div>
+
       <div className="toast-container">
         {toast.show && (
           <div className={`toast ${toast.type}`}>
@@ -785,6 +982,127 @@ function App() {
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
               <button onClick={() => setIsModalOpen(false)}>Cancelar</button>
               <button className="primary-btn" onClick={createFolder} disabled={!newFolderName}>Criar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- MODAL MOVER --- */}
+      {isMoveModalOpen && (
+        <div className="modal-overlay" onClick={() => setIsMoveModalOpen(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ height: '80vh', display: 'flex', flexDirection: 'column' }}>
+            <div className="modal-header">
+              <h3>Mover Item</h3>
+              <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                Movendo: <b>{itemToMove?.name}</b>
+              </p>
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto', margin: '20px 0', border: '1px solid var(--glass-border)', borderRadius: '16px', padding: '10px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px', paddingBottom: '10px', borderBottom: '1px solid var(--glass-border)' }}>
+                 {moveHistory.length > 0 ? (
+                   <button onClick={handleMoveBack} style={{ padding: '8px 12px', fontSize: '0.8rem' }}>← Voltar</button>
+                 ) : (
+                   <span style={{ padding: '8px 12px', visibility: 'hidden' }}>←</span>
+                 )}
+                 <span style={{ fontWeight: 600, flex: 1, textAlign: 'center' }}>
+                   {moveTargetName}
+                 </span>
+                 <div style={{ width: '60px' }}></div>
+              </div>
+
+              {isLoadingMove ? (
+                <div style={{ display: 'flex', justifyContent: 'center', padding: '20px' }}><div className="spinner"></div></div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                  {moveFolderList.length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-secondary)' }}>Nenhuma pasta aqui.</div>
+                  ) : (
+                    moveFolderList.map(folder => (
+                      <div 
+                        key={folder.id} 
+                        onClick={() => handleMoveNavigate(folder.id, folder.name)}
+                        style={{ 
+                          padding: '12px', 
+                          borderRadius: '12px', 
+                          background: 'var(--btn-bg)', 
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '10px'
+                        }}
+                      >
+                         <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" color="var(--text-secondary)"><path d="M10 4H4C2.9 4 2 4.9 2 6V18C2 19.1 2.9 20 4 20H20C21.1 20 22 19.1 22 18V8C22 6.9 21.1 6 20 6H12L10 4Z" /></svg>
+                         {folder.name}
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button onClick={() => setIsMoveModalOpen(false)}>Cancelar</button>
+              <button className="primary-btn" onClick={confirmMove} disabled={isLoadingMove}>
+                Mover Aqui
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- MODAL UPLOAD CUSTOMIZADO --- */}
+      {isUploadModalOpen && (
+        <div className="modal-overlay" onClick={() => setIsUploadModalOpen(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '500px' }}>
+            <div className="modal-header"><h3>Enviar Arquivos</h3></div>
+            
+            <div 
+              className={`upload-dropzone ${isDragging ? 'dragging' : ''}`}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              onClick={() => fileInputRef.current.click()}
+            >
+               <input 
+                 type="file" 
+                 multiple 
+                 ref={fileInputRef} 
+                 onChange={handleFileSelect} 
+                 style={{ display: 'none' }} 
+               />
+               <div className="upload-icon">
+                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                   <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"></path>
+                   <path d="M12 12v9"></path>
+                   <path d="M8 17l4 4 4-4"></path>
+                 </svg>
+               </div>
+               <div className="upload-text">Clique ou arraste arquivos aqui</div>
+               <div className="upload-subtext">Suporta múltiplos arquivos</div>
+            </div>
+
+            {filesToUpload.length > 0 && (
+              <div className="upload-file-list">
+                {filesToUpload.map((file, index) => (
+                  <div key={index} className="upload-file-item">
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', overflow: 'hidden' }}>
+                      <span style={{ fontSize: '1.2rem' }}>📄</span>
+                      <span className="upload-file-name">{file.name}</span>
+                    </div>
+                    <button className="remove-file-btn" onClick={() => removeFileFromUpload(index)}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '10px' }}>
+              <button onClick={() => setIsUploadModalOpen(false)}>Cancelar</button>
+              <button className="primary-btn" onClick={confirmUpload} disabled={filesToUpload.length === 0 || uploading}>
+                {uploading ? 'Enviando...' : `Enviar ${filesToUpload.length > 0 ? `(${filesToUpload.length})` : ''}`}
+              </button>
             </div>
           </div>
         </div>
